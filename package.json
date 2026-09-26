@@ -1,0 +1,9 @@
+{
+  "name": "autonomous-multi-agent-software-engineering-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A controlled foundation for an autonomous software engineering harness",
+  "main": "src/index.js",
+  "scripts": { "start": "node src/index.js", "test": "node --test tests/core/*.test.js tests/tools/*.test.js tests/integration/*.test.js", "test:evaluation": "node scripts/evaluator-smoke.js" },
+  "engines": { "node": ">=18" }
+}
