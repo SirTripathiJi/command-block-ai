@@ -14,38 +14,52 @@ class ToolLoop {
       const response = await withTimeout(this.llm.generate({ messages: messages.map(message => ({ ...message })), tools: toolDefinitions }, { timeoutMs: remaining, onEvent: event => this.state?.recordLLMEvent(event), reserveCall: () => this.state?.reserveLLMCall(this.config.maxLLMCalls ?? Infinity) }), remaining, 'LLM request timed out');
       if(!isActive())throw Object.assign(new Error('Step execution lease expired.'),{code:'TIMEOUT'});
       if (response.type === 'final') return { content: response.content, toolResults: artifacts };
-      const call = { agent, tool: response.tool, arguments: response.arguments, step: step + 1 };
-      const stateCall={agent,tool:response.tool,arguments:safeArguments(response.arguments,this.llm?.config?.apiKey),step:step+1};this.state.toolCalls.push(stateCall); messages.push({ role: 'assistant', content: JSON.stringify(response) });
-      if(++this.toolCount>this.config.maxToolCalls)throw Object.assign(new Error(`Maximum tool call limit reached (${this.config.maxToolCalls}).`),{code:'RESOURCE_LIMIT',resource:'tool_calls'});
-      let result;
-      const toolStartedAt=Date.now();
-      try {
-        const tool = this.toolRegistry.get(response.tool);
-        if (!tool) throw Object.assign(new Error(`Unknown tool: ${response.tool}`), { code: 'UNKNOWN_TOOL' });
-        if (!allowed.has(response.tool)) throw Object.assign(new Error(`Tool not available to ${agent}: ${response.tool}`), { code: 'PERMISSION_DENIED' });
-        if (tool.permissions.some(permission => !this.config.allowedPermissions.includes(permission))) throw Object.assign(new Error('Tool permission denied'), { code: 'PERMISSION_DENIED' });
-        validateArguments(tool.inputSchema, response.arguments);
-        this.logger?.info('TOOL', `Executing ${tool.name}`, { agent });
-        this.state?.record('tool_started', { agent, tool: tool.name });
-        const data = await withTimeout(Promise.resolve().then(() => tool.execute(response.arguments)), Math.min(this.config.toolTimeoutMs, remaining), 'Tool execution timed out');
-        if(!isActive())throw Object.assign(new Error('Step execution lease expired.'),{code:'TIMEOUT'});
-        result = { success: true, tool: tool.name, data, error: null };
-        if (tool.name === 'edit_file' || tool.name === 'create_file') {
-          if (data.changed && !this.state.filesChanged.includes(data.path)) this.state.filesChanged.push(data.path);
-          if (data.changed) this.state.actualChanges.push({ path: data.path, operation: tool.name === 'edit_file' ? 'modify' : 'create', tool: tool.name, succeeded: true, beforeExists: tool.name === 'edit_file', afterExists: true, beforeHash: data.beforeHash || null, afterHash: data.afterHash || null, diff: data.diff || null });
+      const calls = response.type === 'tool_calls' ? response.toolCalls : [{ id: response.toolCallId, name: response.tool, arguments: response.arguments }];
+      if (!Array.isArray(calls) || !calls.length) throw Object.assign(new Error('Provider returned no tool calls.'), { code: 'invalid_llm_response' });
+      messages.push({ role: 'assistant', content: '', toolCalls: calls });
+      for (const [index, current] of calls.entries()) {
+        const toolName = current.name;
+        const toolId = current.id || `local-${step + 1}-${index + 1}`;
+        const args = current.arguments;
+        const call = { agent, tool: toolName, arguments: args, step: step + 1, toolCallId: toolId };
+        const stateCall = { agent, tool: toolName, arguments: safeArguments(args, this.llm?.config?.apiKey), step: step + 1, toolCallId: toolId };
+        this.state.toolCalls.push(stateCall);
+        if (++this.toolCount > this.config.maxToolCalls) throw Object.assign(new Error(`Maximum tool call limit reached (${this.config.maxToolCalls}).`), { code: 'RESOURCE_LIMIT', resource: 'tool_calls' });
+        let result;
+        const toolStartedAt = Date.now();
+        try {
+          const tool = this.toolRegistry.get(toolName);
+          if (!tool) throw Object.assign(new Error(`Unknown tool: ${toolName}`), { code: 'UNKNOWN_TOOL' });
+          if (!allowed.has(toolName)) throw Object.assign(new Error(`Tool not available to ${agent}: ${toolName}`), { code: 'PERMISSION_DENIED' });
+          if (tool.permissions.some(permission => !this.config.allowedPermissions.includes(permission))) throw Object.assign(new Error('Tool permission denied'), { code: 'PERMISSION_DENIED' });
+          validateArguments(tool.inputSchema, args);
+          this.logger?.info('TOOL', `Executing ${tool.name}`, { agent });
+          this.state?.record('tool_started', { agent, tool: tool.name });
+          const data = await withTimeout(Promise.resolve().then(() => tool.execute(args)), Math.min(this.config.toolTimeoutMs, remaining), 'Tool execution timed out');
+          if (!isActive()) throw Object.assign(new Error('Step execution lease expired.'), { code: 'TIMEOUT' });
+          result = { success: true, tool: tool.name, data, error: null };
+          if (tool.name === 'edit_file' || tool.name === 'create_file') {
+            if (data.changed && !this.state.filesChanged.includes(data.path)) this.state.filesChanged.push(data.path);
+            if (data.changed) this.state.actualChanges.push({ path: data.path, operation: tool.name === 'edit_file' ? 'modify' : 'create', tool: tool.name, succeeded: true, beforeExists: tool.name === 'edit_file', afterExists: true, beforeHash: data.beforeHash || null, afterHash: data.afterHash || null, diff: data.diff || null });
+          }
+          if (tool.name === 'run_tests') {
+            const secret = this.llm?.config?.apiKey; const run = { attempt: this.state.testRuns.length + 1, startedAt: data.startedAt || new Date(toolStartedAt).toISOString(), endedAt: data.endedAt || new Date().toISOString(), durationMs: data.durationMs ?? Date.now() - toolStartedAt, ...data };
+            const safeRun = { ...run, command: safeCommand(run.command, secret), stdout: safeText(run.stdout, secret), stderr: safeText(run.stderr, secret), ...(run.error ? { error: { ...run.error, message: safeText(run.error.message, secret) } } : {}) }; this.state.testRuns.push(safeRun);
+            this.state.record('test_execution', { attempt: run.attempt, command: safeRun.command, durationMs: run.durationMs, exitCode: run.exitCode, success: run.success, timedOut: Boolean(run.timedOut), stdout: safeRun.stdout, stderr: safeRun.stderr });
+          }
+          this.state?.record('tool_finished', { agent, tool: tool.name, durationMs: Date.now() - toolStartedAt, success: true });
+        } catch (error) {
+          if (error.code === 'RESOURCE_LIMIT') throw error;
+          result = { success: false, tool: toolName, data: null, error: { code: error.code || error.name || 'TOOL_ERROR', message: error.message } };
+          this.state?.record('tool_finished', { agent, tool: toolName, durationMs: Date.now() - toolStartedAt, success: false, code: result.error.code });
         }
-        if (tool.name === 'run_tests') {
-          const secret=this.llm?.config?.apiKey;const run = { attempt: this.state.testRuns.length + 1, startedAt: data.startedAt || new Date(toolStartedAt).toISOString(), endedAt: data.endedAt || new Date().toISOString(), durationMs: data.durationMs ?? Date.now() - toolStartedAt, ...data };
-          const safeRun={...run,command:safeCommand(run.command,secret),stdout:safeText(run.stdout,secret),stderr:safeText(run.stderr,secret),...(run.error?{error:{...run.error,message:safeText(run.error.message,secret)}}:{})};this.state.testRuns.push(safeRun);
-          this.state.record('test_execution', { attempt: run.attempt, command: safeRun.command, durationMs: run.durationMs, exitCode: run.exitCode, success: run.success, timedOut: Boolean(run.timedOut), stdout: safeRun.stdout, stderr: safeRun.stderr });
-        }
-        this.state?.record('tool_finished', { agent, tool: tool.name, durationMs: Date.now() - toolStartedAt, success: true });
-      } catch (error) { if(error.code==='RESOURCE_LIMIT')throw error; result = { success: false, tool: response.tool, data: null, error: { code: error.code || error.name || 'TOOL_ERROR', message: error.message } }; this.state?.record('tool_finished',{agent,tool:response.tool,durationMs:Date.now()-toolStartedAt,success:false,code:result.error.code}); }
-      if(!isActive())throw Object.assign(new Error('Step execution lease expired.'),{code:'TIMEOUT'});
-      const hash = createHash('sha256').update(JSON.stringify(result)).digest('hex'); call.resultHash = hash;stateCall.resultHash=hash;
-      if (!this.state.toolResults.some(item => item.hash === hash)) this.state.toolResults.push({ hash, ...safeResult(result,this.llm?.config?.apiKey) });
-      this.state.record('tool_result', { agent, ...safeResult(result,this.llm?.config?.apiKey), resultHash: hash });
-      artifacts.push({...result,arguments:safeArguments(response.arguments,this.llm?.config?.apiKey)}); messages.push({ role: 'tool', name: response.tool, content: JSON.stringify(redactResult(result,this.llm?.config?.apiKey)) });
+        if (!isActive()) throw Object.assign(new Error('Step execution lease expired.'), { code: 'TIMEOUT' });
+        const hash = createHash('sha256').update(JSON.stringify(result)).digest('hex'); call.resultHash = hash; stateCall.resultHash = hash;
+        if (!this.state.toolResults.some(item => item.hash === hash)) this.state.toolResults.push({ hash, ...safeResult(result, this.llm?.config?.apiKey) });
+        this.state.record('tool_result', { agent, ...safeResult(result, this.llm?.config?.apiKey), resultHash: hash });
+        artifacts.push({ ...result, toolCallId: toolId, arguments: safeArguments(args, this.llm?.config?.apiKey) });
+        messages.push({ role: 'tool', tool_call_id: toolId, content: JSON.stringify(redactResult(result, this.llm?.config?.apiKey)) });
+      }
     }
     throw Object.assign(new Error(`${agent} exceeded maximum agent steps (${this.config.maxAgentSteps}).`),{code:'RESOURCE_LIMIT',resource:'agent_steps'});
   }

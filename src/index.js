@@ -15,10 +15,10 @@ const { AgentRegistry } = require('./core/agentRegistry');
 const { createCoreAgents } = require('./agents/llmAgents');
 const { ConfigurationError } = require('./utils/errors');
 async function buildOrchestrator(config, logger = new Logger()) {
-  const providerFactory = loadProvider(config.providerModule);
+  const providerFactory = loadProvider(config);
   let provider;
   try { provider = await providerFactory(config); }
-  catch { const error = new Error('The configured LLM provider could not be initialized.'); error.name = 'LLMError'; error.code = 'provider_initialization_error'; throw error; }
+  catch (cause) { if (cause?.name === 'ConfigurationError') throw cause; const error = new Error('The configured LLM provider could not be initialized.'); error.name = 'LLMError'; error.code = 'provider_initialization_error'; throw error; }
   if (!provider || typeof provider.generate !== 'function') { const error = new Error('LLM provider must implement generate(request, options).'); error.name = 'LLMError'; error.code = 'provider_interface_error'; throw error; }
   const tools = new ToolRegistry();
   [...createFileTools(config), createSearchTool(config), ...createGitTools(config), ...createEditTools(config), createRunTestsTool({ workspaceRoot: config.workspaceRoot, testCommand: config.testCommand, timeoutMs: config.commandTimeoutMs, maxOutputBytes: config.maxCommandOutputBytes })].forEach(tool => tools.register(tool));

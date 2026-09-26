@@ -45,7 +45,7 @@ test('malformed requests and responses fail at the client boundary', async () =>
   await assert.rejects(llm.generate({ messages: [{ role: 'unknown', content: 'x' }] }), error => error.code === 'invalid_llm_request');
   await assert.rejects(llm.generate(request), error => error.code === 'invalid_llm_response');
   assert.equal(calls, 1);
-  assert.throws(() => normalizeResponse({ type: 'tool_call', toolCalls: [{ name: 'one', arguments: {} }, { name: 'two', arguments: {} }] }), error => error.code === 'invalid_llm_response');
+  assert.equal(normalizeResponse({ type: 'tool_call', toolCalls: [{ id: 'c1', name: 'one', arguments: {} }, { id: 'c2', name: 'two', arguments: {} }] }).type, 'tool_calls');
 });
 
 test('provider errors and task activity never expose credentials or prompts', async () => {

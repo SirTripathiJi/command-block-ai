@@ -45,7 +45,10 @@ function loadConfig(env = process.env) {
   const workspaceRoot = path.resolve(env.WORKSPACE_ROOT || process.cwd());
   try { if (!fs.statSync(workspaceRoot).isDirectory()) throw new Error(); }
   catch { throw new ConfigurationError('WORKSPACE_ROOT must point to an existing directory'); }
-  return Object.freeze({ providerModule: env.LLM_PROVIDER_MODULE || '', llmModel, model: llmModel || 'unspecified', llmEndpoint, llmTimeoutMs, llmMaxRetries, testCommand, maxFixAttempts, maxAgentRetries, maxPlanSteps, maxConcurrency, stepTimeoutMs, maxAgentSteps, maxToolCalls, maxLLMCalls, maxExecutionTimeMs, apiKey: env.AI_API_KEY || '', temperature, maxTokens, retryLimit: retries, workspaceRoot, allowedCommands: (env.ALLOWED_COMMANDS || '').split(',').map(x => x.trim()).filter(Boolean), commandTimeoutMs, maxCommandOutputBytes });
+  const llmProvider = (env.LLM_PROVIDER || '').trim().toLowerCase();
+  if (llmProvider && !env.LLM_PROVIDER_MODULE && !['deepseek', 'qwen'].includes(llmProvider)) throw new ConfigurationError('LLM_PROVIDER must be deepseek or qwen when using the built-in provider');
+  if (env.LLM_THINKING_MODE && !['0', 'false', 'off'].includes(String(env.LLM_THINKING_MODE).toLowerCase())) throw new ConfigurationError('LLM_THINKING_MODE is not supported by the current tool-call message protocol', 'unsupported_thinking_mode');
+  return Object.freeze({ providerModule: env.LLM_PROVIDER_MODULE || '', llmProvider, llmModel, model: llmModel || 'unspecified', llmEndpoint, llmTimeoutMs, llmMaxRetries, testCommand, maxFixAttempts, maxAgentRetries, maxPlanSteps, maxConcurrency, stepTimeoutMs, maxAgentSteps, maxToolCalls, maxLLMCalls, maxExecutionTimeMs, apiKey: env.AI_API_KEY || '', temperature, maxTokens, retryLimit: retries, workspaceRoot, allowedCommands: (env.ALLOWED_COMMANDS || '').split(',').map(x => x.trim()).filter(Boolean), commandTimeoutMs, maxCommandOutputBytes });
 }
 function boundedInteger(name, value, min, max) { if (!Number.isSafeInteger(value) || value < min || value > max) throw new ConfigurationError(`${name} must be an integer from ${min} through ${max}`); }
 module.exports = { loadConfig };

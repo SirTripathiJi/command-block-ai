@@ -6,9 +6,14 @@ class TaskPlanner {
     const budget=Math.min(this.maxExecutionTimeMs,timeoutMs??this.maxExecutionTimeMs);
     const response = await withTimeout(this.llm.generate({ messages: [{role:'system',content:SYSTEM_PROMPT},{role:'user',content:JSON.stringify({issue,availableAgents:agents.map(({name,description,capabilities,tools})=>({name,description,capabilities,tools}))})}], tools: [] }, { timeoutMs: budget, onEvent: onLLMEvent, reserveCall }),budget);
     if (response.type !== 'final') throw new ValidationError('Planner must return a final JSON plan');
-    let plan; try { plan=JSON.parse(response.content); } catch { throw new ValidationError('Planner response is not valid JSON'); }
+    let plan; try { plan=parsePlannerJson(response.content); } catch { throw new ValidationError('Planner response is not valid JSON'); }
     return validatePlan(plan, agents, toolRegistry, { maxSteps:this.maxSteps, allowedPermissions:this.allowedPermissions });
   }
+}
+function parsePlannerJson(content) {
+  if (typeof content !== 'string' || Buffer.byteLength(content) > 128 * 1024) throw new Error('invalid JSON');
+  const fenced = content.match(/^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i);
+  return JSON.parse(fenced ? fenced[1] : content);
 }
 function withTimeout(promise,ms){let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('Planning request timed out'),{code:'TIMEOUT'})),ms);})]).finally(()=>clearTimeout(timer));}
 function validatePlan(plan, agents, toolRegistry, {maxSteps=12,allowedPermissions=[]}={}) {
@@ -42,4 +47,4 @@ function validatePlan(plan, agents, toolRegistry, {maxSteps=12,allowedPermission
   for(const reviewer of ordered.filter(step=>step.agent==='reviewer')) if(developers.length&&!ordered.some(step=>step.agent==='qa'&&reaches(reviewer.id,step.id))) throw new ValidationError(`Review step ${reviewer.id} must depend on QA verification`);
   return {goal:plan.goal,steps:ordered};
 }
-module.exports={TaskPlanner,validatePlan,SYSTEM_PROMPT};
+module.exports={TaskPlanner,validatePlan,SYSTEM_PROMPT,parsePlannerJson};

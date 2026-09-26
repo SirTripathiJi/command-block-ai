@@ -55,7 +55,7 @@ class TaskState {
     if (this.status === 'verified' || this.status === 'completed' && this.verification?.status === 'passed') return 'success';
     if (this.status === 'invalid_input') return 'invalid_input';
     if (this.status === 'resource_limit') return 'resource_limit';
-    if (['ConfigurationError', 'provider_not_configured', 'missing_api_key','CONFIGURATION_ERROR'].includes(this.planningError?.code)) return 'configuration_error';
+    if (['ConfigurationError', 'provider_not_configured', 'missing_api_key', 'missing_llm_model', 'missing_llm_endpoint', 'invalid_llm_endpoint', 'llm_invalid_endpoint_or_model', 'unsupported_thinking_mode', 'fetch_unavailable', 'provider_load_error', 'provider_interface_error', 'CONFIGURATION_ERROR', 'configuration_error'].includes(this.planningError?.code)) return 'configuration_error';
     if (this.planningError?.code === 'RESOURCE_LIMIT' || this.errors.some(error=>error.code==='RESOURCE_LIMIT')) return 'resource_limit';
     if (this.errors.some(error=>error.code==='TIMEOUT'||error.code==='TASK_TIMEOUT') || this.planningError?.code==='provider_timeout') return 'timeout';
     if (this.status === 'failed_verification') return 'verification_failed';

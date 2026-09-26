@@ -6,7 +6,9 @@ const TRANSIENT_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUN
 function normalizeRequest(request) {
   if (!isRecord(request) || !Array.isArray(request.messages) || request.messages.length < 1 || request.messages.length > 200) throw invalidRequest();
   for (const message of request.messages) {
-    if (!isRecord(message) || !['system', 'user', 'assistant', 'tool'].includes(message.role) || typeof message.content !== 'string' || message.content.length > 1024 * 1024) throw invalidRequest();
+    if (!isRecord(message) || !['system', 'user', 'assistant', 'tool'].includes(message.role) || (message.content !== null && typeof message.content !== 'string') || (message.content || '').length > 1024 * 1024) throw invalidRequest();
+    if (message.role === 'tool' && (typeof message.tool_call_id !== 'string' || !message.tool_call_id || message.tool_call_id.length > 256)) throw invalidRequest();
+    if (message.toolCalls !== undefined && (message.role !== 'assistant' || !Array.isArray(message.toolCalls) || message.toolCalls.length > 32)) throw invalidRequest();
   }
   if (request.tools !== undefined) {
     if (!Array.isArray(request.tools) || request.tools.length > 100) throw invalidRequest();
@@ -21,17 +23,30 @@ function normalizeRequest(request) {
   return JSON.parse(JSON.stringify(request));
 }
 
-function normalizeResponse(response) {
+function normalizeResponse(response, request) {
   if (!isRecord(response)) throw invalidResponse();
   if ((response.type === 'final' || response.type === 'message') && typeof response.content === 'string' && response.content.length <= 1024 * 1024) return { type: 'final', content: response.content };
   if (response.type === 'tool_call') {
     let tool = response.tool; let args = response.arguments;
-    if (Array.isArray(response.toolCalls) && response.toolCalls.length === 1) { tool = response.toolCalls[0]?.name; args = response.toolCalls[0]?.arguments; }
-    if (typeof tool === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(tool) && isRecord(args)) {
-      try { if (Buffer.byteLength(JSON.stringify(args)) <= 64 * 1024) return { type: 'tool_call', tool, arguments: JSON.parse(JSON.stringify(args)) }; } catch {}
+    const id = response.toolCallId || response.id;
+    if (Array.isArray(response.toolCalls)) {
+      if (!response.toolCalls.length || response.toolCalls.length > 32) throw invalidResponse();
+      const calls = response.toolCalls.map(call => normalizeToolCall(call, request));
+      return calls.length === 1 ? { type: 'tool_call', tool: calls[0].name, arguments: calls[0].arguments, ...(calls[0].id ? { toolCallId: calls[0].id } : {}) } : { type: 'tool_calls', toolCalls: calls };
     }
+    const normalized = normalizeToolCall({ id, name: tool, arguments: args }, request);
+    return { type: 'tool_call', tool: normalized.name, arguments: normalized.arguments, ...(normalized.id ? { toolCallId: normalized.id } : {}) };
   }
+  if (response.type === 'tool_calls' && Array.isArray(response.toolCalls) && response.toolCalls.length > 0 && response.toolCalls.length <= 32) return { type: 'tool_calls', toolCalls: response.toolCalls.map(call => normalizeToolCall(call, request)) };
   throw invalidResponse();
+}
+
+function normalizeToolCall(call, request) {
+  const name = call?.name;
+  const args = call?.arguments;
+  const id = call?.id;
+  if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(name) || !isRecord(args) || (id !== undefined && (typeof id !== 'string' || !id || id.length > 256))) throw invalidResponse();
+  try { if (Buffer.byteLength(JSON.stringify(args)) > 64 * 1024) throw invalidResponse(); return { ...(id ? { id } : {}), name, arguments: JSON.parse(JSON.stringify(args)) }; } catch (error) { if (error instanceof ValidationError) throw error; throw invalidResponse(); }
 }
 
 class LLMClient {
@@ -54,7 +69,7 @@ class LLMClient {
           apiKey: this.config.apiKey,
           timeoutMs: Math.max(1, deadline - Date.now())
         }, Math.max(1, deadline - Date.now()));
-        const result = normalizeResponse(response);
+        const result = normalizeResponse(response, normalized);
         onEvent?.({ type: 'success', attempt });
         return result;
       } catch (error) {
